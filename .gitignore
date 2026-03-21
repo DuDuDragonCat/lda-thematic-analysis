@@ -8,9 +8,10 @@ data/
 # macOS
 .DS_Store
 # __pycache__
-__pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 
 *.pdf
 *.pptx
+lda_app_state.json
