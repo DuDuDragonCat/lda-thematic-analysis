@@ -25,6 +25,7 @@ _DEFAULTS = {
     'burnin':         _FB_DEFAULT['burnin'],
     'iteration':      _FB_DEFAULT['iteration'],
     'thin':           _FB_DEFAULT['thin'],
+    'exclude_single_char': _FB_DEFAULT['exclude_single_char'],
     # ── Step3 私有參數（findbest_worker.DEFAULT）────────────────────────
     'step3_min':      _FB_DEFAULT['min_topic'],
     'step3_max':      _FB_DEFAULT['max_topic'],
@@ -58,6 +59,7 @@ class AppState:
         self.burnin         = tk.StringVar()
         self.iteration      = tk.StringVar()
         self.thin           = tk.StringVar()
+        self.exclude_single_char = tk.StringVar()  # Step3 & Step4 共享
 
         # ── 各步驟私有（僅持久化）─────────────────────────────────────────────
         self.step2_input    = tk.StringVar()   # Step2 輸入資料夾（原始 xlsx）
@@ -82,6 +84,7 @@ class AppState:
         self.burnin.set(_DEFAULTS['burnin'])
         self.iteration.set(_DEFAULTS['iteration'])
         self.thin.set(_DEFAULTS['thin'])
+        self.exclude_single_char.set(_DEFAULTS['exclude_single_char'])
 
     # ── 內部 ────────────────────────────────────────────────────────────────
 
@@ -97,6 +100,10 @@ class AppState:
                 data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             data = {}
+
+        # 舊版 state 相容：將舊 key 轉成新 key 後統一走同一套載入邏輯
+        if 'exclude_single_char' not in data and 'step4_exclude_single_char' in data:
+            data['exclude_single_char'] = data['step4_exclude_single_char']
 
         for key, default in _DEFAULTS.items():
             getattr(self, key).set(data.get(key, default))

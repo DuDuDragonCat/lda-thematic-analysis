@@ -24,6 +24,7 @@ DEFAULT = {
     # Step4 私有參數
     "topicnum": "2",
     "words_num": "50",
+    "exclude_single_char": _FB_DEFAULT["exclude_single_char"],
 }
 
 
@@ -35,10 +36,24 @@ def safe_int(text, default):
         return default
 
 
-def make_filename(folder_path, topicnum, words_num, prefix):
+def safe_bool(text, default=True):
+    if isinstance(text, bool):
+        return text
+    if text is None:
+        return default
+    s = str(text).strip().lower()
+    if s in {"1", "true", "yes", "y", "on"}:
+        return True
+    if s in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def make_filename(folder_path, topicnum, words_num, prefix, exclude_single_char):
     date = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-    filename = f"{prefix}_t{topicnum}_w{words_num}.xlsx"
-    filename_date = f"{prefix}_t{topicnum}_w{words_num}_{date}.xlsx"
+    single_char_tag = "rm1char" if exclude_single_char else "keep1char"
+    filename = f"{prefix}_t{topicnum}_w{words_num}_{single_char_tag}.xlsx"
+    filename_date = f"{prefix}_t{topicnum}_w{words_num}_{single_char_tag}_{date}.xlsx"
     if os.path.exists(os.path.join(folder_path, filename)):
         return os.path.join(folder_path, filename_date)
     return os.path.join(folder_path, filename)
@@ -120,7 +135,16 @@ def process_files(input_file_paths, part_words_num):
 
 
 def run_lda_tomotopy(
-    raw_ids, raw_vec_strs, part_vec_strs, part_ids, k, seed, burn_in, iteration, thin
+    raw_ids,
+    raw_vec_strs,
+    part_vec_strs,
+    part_ids,
+    k,
+    seed,
+    burn_in,
+    iteration,
+    thin,
+    exclude_single_char,
 ):
     """
     兩階段 LDA：
@@ -130,8 +154,12 @@ def run_lda_tomotopy(
                （訓練時已充分取樣，無需重新 infer）。
     回傳 gamma_df（段落層級）、beta_df（詞-主題）、raw_gamma_df（文章層級）。
     """
-    raw_filtered = [[w for w in s.split() if len(w) >= 2] for s in raw_vec_strs]
-    part_filtered = [[w for w in s.split() if len(w) >= 2] for s in part_vec_strs]
+    if exclude_single_char:
+        raw_filtered = [[w for w in s.split() if len(w) >= 2] for s in raw_vec_strs]
+        part_filtered = [[w for w in s.split() if len(w) >= 2] for s in part_vec_strs]
+    else:
+        raw_filtered = [s.split() for s in raw_vec_strs]
+        part_filtered = [s.split() for s in part_vec_strs]
 
     mdl = tp.LDAModel(k=k, seed=seed)
     for doc in raw_filtered:
@@ -211,6 +239,7 @@ def run_fitlda(
     iteration,
     thin,
     words_num,
+    exclude_single_char,
     on_append,
     on_done,
     on_error,
@@ -223,6 +252,9 @@ def run_fitlda(
                 f"SEED: {seed}; Burn In: {burn_in}; Iteration: {iteration}; Thin: {thin}"
             )
             on_append(f"Topic Number: {k}; 每段落詞數: {words_num}")
+            on_append(
+                f"排除單字詞：{'是' if exclude_single_char else '否'}"
+            )
             (raw_ids, _, _, raw_vec_strs, part_ids, _, part_vec_strs, part_raw_strs) = (
                 process_files(input_files, words_num)
             )
@@ -240,6 +272,7 @@ def run_fitlda(
                 burn_in,
                 iteration,
                 thin,
+                exclude_single_char,
             )
 
             # ── TopicPart：段落層級主題分布 ────────────────────────────────
@@ -275,9 +308,15 @@ def run_fitlda(
             )
 
             # ── 存檔 ──────────────────────────────────────────────────────
-            topic_part_path = make_filename(output_folder, k, words_num, "TopicPart")
-            word_topic_path = make_filename(output_folder, k, words_num, "WordTopic")
-            topic_doc_path = make_filename(output_folder, k, words_num, "TopicDoc")
+            topic_part_path = make_filename(
+                output_folder, k, words_num, "TopicPart", exclude_single_char
+            )
+            word_topic_path = make_filename(
+                output_folder, k, words_num, "WordTopic", exclude_single_char
+            )
+            topic_doc_path = make_filename(
+                output_folder, k, words_num, "TopicDoc", exclude_single_char
+            )
 
             with pd.ExcelWriter(topic_part_path, engine="openpyxl") as writer:
                 gamma_pivot.to_excel(writer, index=False, sheet_name="TopicPart")

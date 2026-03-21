@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
-from workers.findbest_worker import DEFAULT, safe_int, run_findbest
+from workers.findbest_worker import DEFAULT, safe_int, safe_bool, run_findbest
 from ui import get_app_dir
 
 
@@ -67,6 +67,14 @@ class Step3FindBestFrame(ctk.CTkFrame):
         self._min_var    = self._make_param(param_right, row=0, label='Topic Number From：', var=self._state.step3_min)
         self._max_var    = self._make_param(param_right, row=1, label='Topic Number To：',   var=self._state.step3_max)
         self._per_var    = self._make_param(param_right, row=2, label='Topic Number By：',   var=self._state.step3_per)
+        self._exclude_single_var = self._state.exclude_single_char
+        ctk.CTkCheckBox(
+            param_right,
+            text='排除單字詞（詞長=1）',
+            variable=self._exclude_single_var,
+            onvalue='1',
+            offvalue='0',
+        ).grid(row=3, column=0, columnspan=2, pady=(6, 0), sticky='w')
 
         # 按鈕列
         btn_frame = ctk.CTkFrame(self, fg_color='transparent')
@@ -162,6 +170,10 @@ class Step3FindBestFrame(ctk.CTkFrame):
         min_k   = safe_int(self._min_var.get(),    2)
         max_k   = safe_int(self._max_var.get(),    10)
         per_k   = safe_int(self._per_var.get(),    2)
+        exclude_single_char = safe_bool(
+            self._exclude_single_var.get(),
+            default=(DEFAULT['exclude_single_char'] == '1')
+        )
 
         self._busy = True
         self._btn_run.configure(state='disabled')
@@ -173,6 +185,7 @@ class Step3FindBestFrame(ctk.CTkFrame):
             output_folder=out_folder,
             seed=seed, burn_in=burnin, iteration=itr, thin=thin,
             min_topic=min_k, max_topic=max_k, per_topic=per_k,
+            exclude_single_char=exclude_single_char,
             on_append=lambda msg: self._queue.put(('append', msg)),
             on_done=lambda png: self._queue.put(('done', png)),
             on_error=lambda err: self._queue.put(('error', err)),

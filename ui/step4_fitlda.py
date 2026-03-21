@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
-from workers.fitlda_worker import DEFAULT, safe_int, run_fitlda
+from workers.fitlda_worker import DEFAULT, safe_int, safe_bool, run_fitlda
 from ui import get_app_dir
 
 
@@ -63,6 +63,14 @@ class Step4FitLDAFrame(ctk.CTkFrame):
         # Step4 私有參數（持久化）
         self._topicnum_var = self._make_param(param_right, row=0, label='LDA Topic Number（K）：', var=self._state.step4_topicnum)
         self._wordsnum_var = self._make_param(param_right, row=1, label='每段落詞數：',             var=self._state.step4_wordsnum)
+        self._exclude_single_var = self._state.exclude_single_char
+        ctk.CTkCheckBox(
+            param_right,
+            text='排除單字詞（詞長=1）',
+            variable=self._exclude_single_var,
+            onvalue='1',
+            offvalue='0',
+        ).grid(row=2, column=0, columnspan=2, pady=(6, 0), sticky='w')
 
         # 按鈕列
         btn_frame = ctk.CTkFrame(self, fg_color='transparent')
@@ -127,6 +135,7 @@ class Step4FitLDAFrame(ctk.CTkFrame):
         self._state.reset_lda_params()   # 重置 Step3/4 共享 LDA 參數
         self._topicnum_var.set(DEFAULT['topicnum'])
         self._wordsnum_var.set(DEFAULT['words_num'])
+        self._exclude_single_var.set(DEFAULT['exclude_single_char'])
         self._append_log('已重置參數。')
 
     def _run(self):
@@ -152,6 +161,10 @@ class Step4FitLDAFrame(ctk.CTkFrame):
         thin      = safe_int(self._thin_var.get(),     100)
         topicnum  = safe_int(self._topicnum_var.get(), 2)
         words_num = safe_int(self._wordsnum_var.get(), 50)
+        exclude_single_char = safe_bool(
+            self._exclude_single_var.get(),
+            default=(DEFAULT['exclude_single_char'] == '1')
+        )
 
         self._busy = True
         self._btn_run.configure(state='disabled')
@@ -163,6 +176,7 @@ class Step4FitLDAFrame(ctk.CTkFrame):
             k=topicnum,
             seed=seed, burn_in=burnin, iteration=itr, thin=thin,
             words_num=words_num,
+            exclude_single_char=exclude_single_char,
             on_append=lambda msg: self._queue.put(('append', msg)),
             on_done=lambda: self._queue.put(('done', None)),
             on_error=lambda err: self._queue.put(('error', err)),
