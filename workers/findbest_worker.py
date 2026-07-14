@@ -5,6 +5,7 @@ import os
 import datetime
 import threading
 
+import mpmath
 import numpy as np
 import pandas as pd
 import tomotopy as tp
@@ -129,13 +130,45 @@ def run_lda_full(
     return models, log_lik_samples, total_tokens
 
 
+# 對應 R ldatuning 套件 Rmpfr::mpfr(x, prec=2000L) 的位元精度
+_MPFR_PRECISION_BITS = 2000
+
+
 def _griffiths2004(log_lik_samples):
+    """調和平均數估計法（Griffiths & Steyvers, 2004）。
+
+    語料庫總對數概似量級大（total_tokens 很大時，樣本間差距動輒上千），
+    直接用 float64 算 exp(-x + ll_med) 會溢位成 inf，導致結果變成 -inf。
+    這裡改用 mpmath 任意精度運算（等同 R ldatuning 套件用 Rmpfr 的做法），
+    在高精度下計算 exp/mean/log，最後才轉回一般 float 回傳。
+    """
     result = {}
-    for k, lls in log_lik_samples.items():
-        x = np.array(lls, dtype=float)
-        ll_med = np.median(x)
-        result[k] = ll_med - np.log(np.mean(np.exp(-x + ll_med)))
+    with mpmath.workprec(_MPFR_PRECISION_BITS):
+        for k, lls in log_lik_samples.items():
+            x = np.array(lls, dtype=float)
+            ll_med = float(np.median(x))
+            terms = [mpmath.exp(mpmath.mpf(ll_med - xi)) for xi in x]
+            mean_val = mpmath.fsum(terms) / len(terms)
+            result[k] = float(ll_med - mpmath.log(mean_val))
     return result
+
+
+# ── 替代做法：log-sum-exp ────────────────────────────────────────────────
+# 用 log-sum-exp 技巧取代任意精度運算，同樣能避免 exp() 溢位，且不需要
+# mpmath。數學上與上面的 mpmath 版本等價，但精度略低（仍是 float64）。
+# 若想改用這個版本：把上面的 _griffiths2004 註解掉，並取消下面的註解。
+#
+# from scipy.special import logsumexp
+#
+# def _griffiths2004(log_lik_samples):
+#     result = {}
+#     for k, lls in log_lik_samples.items():
+#         x = np.array(lls, dtype=float)
+#         ll_med = np.median(x)
+#         y = ll_med - x
+#         log_mean_exp = logsumexp(y) - np.log(len(y))
+#         result[k] = ll_med - log_mean_exp
+#     return result
 
 
 def _caojuan2009(models):
