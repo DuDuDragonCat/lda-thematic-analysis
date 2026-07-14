@@ -75,6 +75,7 @@ pip install -e .
 ### 啟動應用程式
 
 ```bash
+uv run main.py
 python main.py
 ```
 
