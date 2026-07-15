@@ -161,7 +161,10 @@ def run_lda_tomotopy(
         raw_filtered = [s.split() for s in raw_vec_strs]
         part_filtered = [s.split() for s in part_vec_strs]
 
-    mdl = tp.LDAModel(k=k, seed=seed)
+    # 對齊 R topicmodels Gibbs 預設：alpha=50/k、delta(eta)=0.1，
+    # 且訓練期間超參數固定（optim_interval=0 關閉自動優化）。
+    mdl = tp.LDAModel(k=k, alpha=50.0 / k, eta=0.1, seed=seed)
+    mdl.optim_interval = 0
     for doc in raw_filtered:
         if doc:
             mdl.add_doc(doc)

@@ -15,13 +15,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from scipy import linalg
+from scipy.special import gammaln
 
 RM_POS = ["V_2", "DE", "SHI", "FW", "I", "T", "WHITESPACE"]
 
 DEFAULT = {
     "seed": "777",
     "burnin": "500",
-    "iteration": "2000",
+    "iteration": "1000",
     "thin": "100",
     "exclude_single_char": "0",
     "min_topic": "2",
@@ -85,6 +86,39 @@ def process_files(input_file_paths):
     return ids, dfs, proc_dfs, vec_strs
 
 
+def _log_p_w_given_z(mdl):
+    """計算 log P(w|z)，對齊 R topicmodels 的 @logLiks。
+
+    為什麼不能直接用 tomotopy 的 ll_per_word：
+      R topicmodels（Gibbs）的 @logLiks 記錄的是 Griffiths & Steyvers (2004)
+      式 (2) 的 log P(w|z)——只含 topic-word 那一項；ldatuning 的
+      Griffiths2004 指標（調和平均估計）在數學上也只對這個量成立。
+      而 tomotopy 的 ll_per_word 是完整 joint log P(w,z|α,η)，多了
+      document-topic 先驗項 log P(z|α)。該項的量級隨 k 與 α（=50/k）平移，
+      會把小 k 的 likelihood 灌高，導致 Griffiths 曲線形狀被扭曲
+      （例如 k=2 反而變成最大值）。
+
+    Griffiths & Steyvers (2004) 式 (2)：
+      log P(w|z) = k·[lgamma(V·η) − V·lgamma(η)]
+                   + Σ_t [ Σ_w lgamma(n_tw + η) − lgamma(n_t + V·η) ]
+
+    tomotopy 未直接提供 topic-word 計數 n_tw，但它回傳的 φ 就是
+    φ_tw = (n_tw + η) / (n_t + V·η)，因此 n_tw + η = φ_tw · (n_t + V·η)，
+    可從 φ 與 get_count_by_topics() 的 n_t 無損還原公式所需的每一項。
+    """
+    k = mdl.k
+    eta = float(mdl.eta)
+    V = len(mdl.used_vocabs)
+    n_t = np.array(mdl.get_count_by_topics(), dtype=float)
+
+    ll = k * (gammaln(V * eta) - V * gammaln(eta))
+    for t in range(k):
+        phi = np.array(mdl.get_topic_word_dist(t), dtype=float)
+        denom = n_t[t] + V * eta
+        ll += float(np.sum(gammaln(phi * denom)) - gammaln(denom))
+    return ll
+
+
 def run_lda_full(
     word_lists, topic_nums, seed, burn_in, iteration, thin, exclude_single_char
 ):
@@ -100,7 +134,10 @@ def run_lda_full(
 
     for k in topic_nums:
         try:
-            mdl = tp.LDAModel(k=k, seed=seed)
+            # 對齊 R topicmodels Gibbs 預設：alpha=50/k、delta(eta)=0.1，
+            # 且訓練期間超參數固定（optim_interval=0 關閉自動優化）。
+            mdl = tp.LDAModel(k=k, alpha=50.0 / k, eta=0.1, seed=seed)
+            mdl.optim_interval = 0
             for doc in filtered:
                 if doc:
                     mdl.add_doc(doc)
@@ -112,14 +149,17 @@ def run_lda_full(
                 mdl.train(burn_in, workers=1)
 
             post_iters = max(0, iteration)
+            # 對齊 R topicmodels：每 thin 個迭代記錄一次 log P(w|z)
+            # （相當於 topicmodels 的 keep 參數與 @logLiks），
+            # 不用 ll_per_word（joint likelihood，見 _log_p_w_given_z 說明）。
             if thin > 0 and post_iters > 0:
                 steps = max(1, post_iters // thin)
                 ll_samples = []
                 for _ in range(steps):
                     mdl.train(thin, workers=1)
-                    ll_samples.append(mdl.ll_per_word * total_tokens)
+                    ll_samples.append(_log_p_w_given_z(mdl))
             else:
-                ll_samples = [mdl.ll_per_word * total_tokens]
+                ll_samples = [_log_p_w_given_z(mdl)]
 
             models[k] = mdl
             log_lik_samples[k] = ll_samples
@@ -184,19 +224,33 @@ def _caojuan2009(models):
     return result
 
 
-def _arun2010(models, word_lists):
-    doc_lengths = np.array([len(doc) for doc in word_lists], dtype=float)
+def _arun2010(models):
+    """對齊 R ldatuning 套件的 Arun2010 原始碼。
+
+    注意：Arun et al. (2010) 論文描述的是「兩個機率分布間的對稱 KL
+    divergence」，但 ldatuning 的 R 原始碼實際上「不做」正規化——
+      cm1 <- m1.svd$d                    # 原始奇異值，未除以總和
+      cm2 <- (len %*% gamma) / norm(len,"m")  # 只除以最大文件長度，未除以總和
+    R 版數值落在 ~200 的量級、且曲線平緩遞減，正是來自這種未正規化的
+    向量。若把 cm1、cm2 各自正規化成總和為 1 的分布（數學上較符合論文），
+    數值會縮到個位數且曲線形狀翻轉，就對不上 R 的結果。
+    這裡照抄 ldatuning 的行為以求一致。
+
+    文件長度取自 mdl.docs（訓練時實際使用的 token 數），對應 R 版
+    slam::row_sums(dtm)；不可用過濾前的原始詞列表，否則排除單字詞時
+    長度會偏大，且空文件被跳過時會與 gamma 的列錯位。
+    """
     eps = np.finfo(float).tiny
     result = {}
     for k, mdl in models.items():
         phi = np.array([mdl.get_topic_word_dist(t) for t in range(k)])
         _, sv, _ = linalg.svd(phi, full_matrices=False)
-        cm1 = sv / sv.sum()
+        cm1 = sv
 
+        doc_lengths = np.array([len(doc.words) for doc in mdl.docs], dtype=float)
         gamma = np.array([doc.get_topic_dist() for doc in mdl.docs])
         cm2 = doc_lengths @ gamma
         cm2 = cm2 / np.max(np.abs(doc_lengths))
-        cm2 = cm2 / cm2.sum()
 
         cm1 = np.clip(cm1, eps, None)
         cm2 = np.clip(cm2, eps, None)
@@ -272,12 +326,12 @@ def save_metrics_plot(df_norm, save_path):
     plt.close(fig)
 
 
-def build_metrics_df(models, log_lik_samples, word_lists):
+def build_metrics_df(models, log_lik_samples):
     """計算四個指標並建立含原始值與正規化值的 DataFrame。"""
     valid_ks = sorted(models.keys())
     g = _griffiths2004({k: log_lik_samples[k] for k in valid_ks})
     c = _caojuan2009({k: models[k] for k in valid_ks})
-    a = _arun2010({k: models[k] for k in valid_ks}, word_lists)
+    a = _arun2010({k: models[k] for k in valid_ks})
     d = _deveaud2014({k: models[k] for k in valid_ks})
 
     rows = [
@@ -346,7 +400,7 @@ def run_findbest(
                 return
 
             on_append("計算四個評估指標...")
-            result_df = build_metrics_df(models, log_lik_samples, word_lists)
+            result_df = build_metrics_df(models, log_lik_samples)
 
             out_xlsx = make_filename(output_folder, "LDA_Metrics", exclude_single_char)
             result_df.to_excel(out_xlsx, index=False)
